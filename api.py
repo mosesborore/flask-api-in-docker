@@ -79,9 +79,10 @@ def get_task_index(task_id: int):
 
 def parse_date(date):
     """ parse time to proper format of [abbrev. weekday, abbrev. Month day year] """
+    date, time = date.split("T")
     date = list(map(int, date.split("-")))
     dt = datetime(date[0], date[1], date[2])
-    parsed_date = dt.strftime("%a, %b %d %Y")
+    parsed_date = dt.strftime("%a, %b %d") + f" {time}"
 
     return parsed_date
 
@@ -101,6 +102,7 @@ class TasksList(Resource):
 
     def post(self):
         args = parser.parse_args()
+        print(args)
         args['day'] = parse_date(args['day'])
         add_new_task_data(args)
 
