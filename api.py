@@ -1,5 +1,4 @@
-from logging import debug
-from flask import Flask
+from flask import Flask, jsonify
 from flask_restful import Resource, Api, abort, reqparse
 from flask_cors import CORS
 import json
@@ -7,74 +6,55 @@ from datetime import datetime
 from os import path
 from colors import Colors
 import logging
+from flask_sqlalchemy import SQLAlchemy
+
 
 app = Flask("JSON server")
+
+# setup database
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
+
+# setup CORS
 CORS(app, resources={r"/*": {"origin": "*"}})
+
+# setup api
 api = Api(app)
 
 
+# Modelling
+class Task(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    text = db.Column(db.String(250), nullable=False)
+    day = db.Column(db.String(100), nullable=False)
+    reminder = db.Column(db.Boolean, nullable=False, default=False)
+
+    def __str__(self):
+        return str(f"Task {self.id}")
+
+
+def create_db():
+    """ creates database.db if it doesn't exists else skips"""
+    if path.exists("./database.db"):
+        print(Colors.CYAN, "\ndatabase.db exists\n", Colors.WHITE)
+    else:
+        print(
+            Colors.RED, "\nWARNING: database.db doesn't exists. Creating now...\n", Colors.WHITE)
+        db.create_all()
+        print(Colors.GREEN, "database.db created successfully\n", Colors.WHITE)
+
+
+create_db()
+
 logging.getLogger('flask_cors').level = logging.DEBUG
 
+# setting up request argument parser
 parser = reqparse.RequestParser()
 parser.add_argument('id', required=True, type=int)
 parser.add_argument('text', required=True)
 parser.add_argument('day', required=True)
 parser.add_argument('reminder', required=True, type=bool)
-
-
-def create_db():
-    """ creates db.json if it doesn't exists else skips"""
-    if path.exists("./db.json"):
-        print(Colors.CYAN, "\ndb.json exists\n", Colors.WHITE)
-    else:
-        print(
-            Colors.RED, "\nWARNING: db.json doesn't exists. Creating now...\n", Colors.WHITE)
-        with open("./db.json", 'w') as file:
-            json.dump({"tasks": []}, file)
-        print(Colors.GREEN, "db.json created successfully\n", Colors.WHITE)
-
-
-create_db()
-
-
-def get_all_tasks_data():
-    """ returns all the current data in the db.json file"""
-    with open('./db.json', 'r') as db:
-        return json.load(db)
-
-
-def save(data):
-    '''writes @param:data to db.json '''
-    with open('./db.json', 'w') as db:
-        json.dump(data, db)
-
-
-def add_new_task_data(new_data):
-    """ adds the new tasks to db.json"""
-    existing_data = get_all_tasks_data()
-    with open('./db.json', 'w') as db:
-        existing_data['tasks'].append(new_data)
-        save(existing_data)
-
-
-def yield_tasks():
-    """ generator that yields data """
-    tasks = get_all_tasks_data()
-    for task in tasks['tasks']:
-        yield task
-
-
-def get_task(task_id: int):
-    """ returns the task with task_id s"""
-    for task in yield_tasks():
-        if task['id'] == task_id:
-            return task
-
-
-def get_task_index(task_id: int):
-    """ get the index of the task with task_id"""
-    tasks = get_all_tasks_data()['tasks']
-    return tasks.index(get_task(task_id))
 
 
 def parse_date(date):
@@ -87,9 +67,18 @@ def parse_date(date):
     return parsed_date
 
 
+def get_task(task_id: int):
+    """ returns the task with task_id """
+    task = Task.query.get(task_id)
+    data = {"id": task.id, "text": task.text,
+            "day": task.day, "reminder": task.reminder}
+    return data
+
+
 def abort_if_task_doesnt_exist(task_id: int):
-    """ returns error 404 if the task doesn't exist """
-    task = get_task(task_id)
+    """ returns error 404 if the task with 'task_id' doesn't exist """
+    task = Task.query.filter_by(id=task_id).first_or_404(
+        description=f"task with {task_id} doesn't exist")
     if task is None:
         abort(404, message=f"Task with id {task_id} doesn't exist")
 
@@ -98,13 +87,30 @@ class TasksList(Resource):
     """ TASKS LIST """
 
     def get(self):
-        return get_all_tasks_data(), 200
+        tasks = Task.query.all()
+        data = {"tasks": []}
+
+        for task in tasks:
+            current = {"id": task.id, "text": task.text,
+                       "day": task.day, "reminder": task.reminder}
+            data['tasks'].append(current)
+
+        return data, 200
 
     def post(self):
         args = parser.parse_args()
-        print(args)
+        # parse date and time
         args['day'] = parse_date(args['day'])
-        add_new_task_data(args)
+
+        # create new Task
+        new_task = Task(
+            id=args['id'],
+            text=args['text'],
+            day=args['day'],
+            reminder=args['reminder'])
+
+        db.session.add(new_task)
+        db.session.commit()
 
         return "", 201
 
@@ -112,30 +118,26 @@ class TasksList(Resource):
 class Tasks(Resource):
     def get(self, task_id):
         abort_if_task_doesnt_exist(task_id)
-        data = get_task(task_id)
-        return data, 200
+        task = get_task(task_id)
+        return task, 200
 
     def put(self, task_id):
         abort_if_task_doesnt_exist(task_id)
         # parse: args = data in JSON/dict format
         args = parser.parse_args()
+        task = Task.query.get(task_id)
 
-        task_idx = get_task_index(task_id)
-        all_tasks = get_all_tasks_data()
+        task.reminder = args['reminder']
+        # commit changes
+        db.session.commit()
 
-        # update the task
-        all_tasks['tasks'][task_idx].update(args)
-
-        # save data with an updated task
-        save(all_tasks)
-        return all_tasks['tasks'][task_idx]
+        return get_task(task_id)
 
     def delete(self, task_id):
         abort_if_task_doesnt_exist(task_id)
-        task_idx = get_task_index(task_id)
-        all_tasks = get_all_tasks_data()
-        all_tasks['tasks'].pop(task_idx)
-        save(all_tasks)
+        task = Task.query.get(task_id)
+        db.session.delete(task)
+        db.session.commit()
 
         return 204
 
